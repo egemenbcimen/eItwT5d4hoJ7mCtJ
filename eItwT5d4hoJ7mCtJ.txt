@@ -1,0 +1,676 @@
+#bu kod daha onceden kendi kisisel gelisimim icin uzerinde uzun zamandir calistigim bir kod (google colabs üzerinde gelistirildi)
+#veri temizligi yapabilen ve tensorflow uzerinde otomatik olarak parametre optimizasyonu yapip en iyi tahmini bulmasi icin gelistirmistim
+#bu versiyonu buradaki veri islemleri icin bazi kucuk degisiklere ugramistir. (5-fold yapisindan farkli calistigi icin/MAD gore calismakta orjinal kod)
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+from random import choice,randint,random
+!python -m pip install -q git+https://github.com/tensorflow/docs
+
+import tensorflow_docs as tfdocs
+import tensorflow_docs.modeling
+import tensorflow_docs.plots
+
+def build_model(inputsnum,neurons,Layers,optimizerName,learningRate):
+    model = keras.Sequential()
+    for i in range(len(neurons)):
+        if i==0:
+            model.add(tf.keras.layers.Dense(neurons[i], activation=Layers[i], input_shape=[inputsnum]))
+        else :
+            model.add(tf.keras.layers.Dense(neurons[i], activation=Layers[i]))
+    model.add(tf.keras.layers.Dense(1))
+ 
+    if optimizerName=='Adadelta':
+        optimizer = tf.keras.optimizers.Adadelta(learningRate)
+    elif optimizerName=='Adagrad':
+        optimizer = tf.keras.optimizers.Adagrad(learningRate)
+    elif optimizerName=='Adam':
+        optimizer = tf.keras.optimizers.Adam(learningRate)
+    elif optimizerName=='Adamax':
+        optimizer = tf.keras.optimizers.Adamax(learningRate)
+    elif optimizerName=='Ftrl':
+        optimizer = tf.keras.optimizers.Ftrl(learningRate)
+    elif optimizerName=='Nadam':
+        optimizer = tf.keras.optimizers.Nadam(learningRate)  
+    elif optimizerName=='SGD':
+        optimizer = tf.keras.optimizers.SGD(learningRate)
+    else :
+        optimizer = tf.keras.optimizers.RMSprop(learningRate)
+    model.compile(loss='mse', optimizer=optimizer, metrics=['mae', 'mse'])
+    return model
+import pandas as pd
+import numpy as np
+import random
+from sklearn.preprocessing import StandardScaler
+import math
+from datetime import datetime, timedelta
+import datetime
+import warnings
+warnings.filterwarnings( "ignore" )
+#veri okuma ve tahmin sutun adinin actual ile degistirilmesi (actual secilmis bir kelime olarak kullanilmaktadir)
+maindatam=pd.read_csv("term-deposit-marketing-2020.csv",sep=",")
+maindatam=maindatam.set_axis(['age', 'job', 'marital', 'education', 'default', 'balance', 'housing',
+       'loan', 'contact', 'day', 'month', 'duration', 'campaign', 'actual'], axis='columns', inplace=False)
+predictions=[]
+valm=pd.DataFrame()
+#ozel isimli veriler icin tasarlanmis bir kisim!
+if 'insertedHour' in maindatam.columns and 'forecastedHour' in maindatam.columns :
+  valm["Diff"]=(pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S")-pd.to_datetime(maindatam["insertedHour"],format="%Y.%m.%d %H:%M:%S")).astype('timedelta64[s]')/3600
+  valm["Diff"]=(valm["Diff"]-min(valm["Diff"]))/(max(valm["Diff"])-min(valm["Diff"]))
+  if np.var(pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.hour)>0:
+      valm["hour"]=pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.hour
+      valm["hour"]=(valm["hour"]-min(valm["hour"]))/(max(valm["hour"])-min(valm["hour"]))
+  if np.var(pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.day)>0:
+      valm["day"]=pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.day
+      valm["day"]=(valm["day"]-min(valm["day"]))/(max(valm["day"])-min(valm["day"]))
+  if np.var(pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.month)>0:
+      valm["month"]=pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.month
+      valm["month"]=(valm["month"]-min(valm["month"]))/(max(valm["month"])-min(valm["month"]))
+  if np.var(pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.year)>0:
+      valm["year"]=pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.year
+      valm["year"]=(valm["hour"]-min(valm["year"]))/(max(valm["year"])-min(valm["year"]))
+  if np.var(pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.minute)>0:
+      valm["minute"]=pd.to_datetime(maindatam["forecastedHour"],format="%Y.%m.%d %H:%M:%S").dt.minute
+      valm["minute"]=(valm["minute"]-min(valm["minute"]))/(max(valm["minute"])-min(valm["minute"]))
+if 'source' in maindatam.columns:
+  if len(np.unique(maindatam["source"]))>1:
+    valm["source"]=[0 for i in range(len(valm))]
+    k=1
+    for i in np.unique(maindatam["source"]):
+        valm["source"].values[maindatam["source"]==i]=k
+        k=k+1
+#butun veriyi sayisala donusturuyor, sayisalsa 0 ile 1 arasinda normalize edilir. karakter iceriyorsa en cok gozlemlenen 50 veya daha alti ozelligi 0-1 cinsine donusturuyor 
+for i in range(len(maindatam.columns)):
+    if maindatam.columns[i] not in ['source','second','minute','day','month','year','forecastedHour','insertedHour','actual']:
+      try:
+          valm[str(maindatam.columns[i])]=[float(str(ix).replace(',','.')) for ix in maindatam[str(maindatam.columns[i])].values]
+          valm[str(maindatam.columns[i])]=(valm[str(maindatam.columns[i])]-min(valm[str(maindatam.columns[i])]))/(max(valm[str(maindatam.columns[i])])-min(valm[str(maindatam.columns[i])]))
+      except :
+        if len([1 for i in maindatam[maindatam.columns[i]].values if i!=i])==0:
+          val2=np.unique([j for ix in maindatam[str(maindatam.columns[i])] for j in str(ix).replace("\"","").replace("(","").replace(")","").replace("'","").replace(";","").replace(",","").split()])
+          vll=pd.DataFrame()
+          xp=[]
+          for ixx in val2:
+            y=[ix for ix in range(len(maindatam)) for ix2 in str(maindatam[str(maindatam.columns[i])].values[ix]).split() if ixx==ix2]
+            xp.append(-1*len(y))
+          vv=np.sort(xp)
+          vallimit=vv[min(50,len(vv)-1)]+1
+          for ix in range(len(val2)):
+            if xp[ix]<vallimit:
+              valm[maindatam.columns[i]+"_"+val2[ix]]=[0 for j in range(len(maindatam))]
+              valm[maindatam.columns[i]+"_"+val2[ix]].values[[j for j in range(len(maindatam)) for k in str(maindatam[str(maindatam.columns[i])].values[j]).split() if k==val2[ix]]]=1
+#bosluklari randomforest algoritmasi ile doldurulmasi asagidaki kod kullaniliyor:
+a=[]
+b=[]
+c=[]
+for i in range(len(valm.columns)):
+  if len(valm[valm.columns[i]])!=len(np.unique(valm[valm.columns[i]])) and len([1 for i in valm[valm.columns[i]].values if i!=i])==0:
+    b.append(valm.columns[i])
+
+for i in range(len(maindatam.columns)):
+  if (len([1 for i in maindatam[maindatam.columns[i]].values if i!=i])<len(maindatam)*0.2 and len([1 for i in maindatam[maindatam.columns[i]].values if i!=i])>0) and maindatam.columns[i]!="actual":
+    c.append(maindatam.columns[i])
+if len(c)>0:
+  from sklearn.ensemble import RandomForestClassifier
+  for i in range(len(c)):
+      #Create a Gaussian Classifier
+      clf=RandomForestClassifier(n_estimators=100)   
+      if len(b)>0: 
+        X_train=valm[b].values[[j for j in range(len(maindatam)) if maindatam[c[i]].values[j]==maindatam[c[i]].values[j]]]
+      else:        
+        X_train=[[j] for j in range(len(maindatam)) if maindatam[c[i]].values[j]==maindatam[c[i]].values[j]]
+      try :
+          maindatam[c[i]].values=[float(str(maindatam[c[i]].values[ix]).replace("'","").replace("b","").replace(",",".")) for ix in range(len(maindatam)) ]
+      except :
+        print("string type")
+      y_train=np.asarray(maindatam[c[i]].values[[j for j in range(len(maindatam)) if maindatam[c[i]].values[j]==maindatam[c[i]].values[j]]], dtype="|S6")
+      if len(b)>0:
+        X_test=valm[b].values[[j for j in range(len(maindatam)) if maindatam[c[i]].values[j]!=maindatam[c[i]].values[j]]]
+      else :        
+        X_test=[[j] for j in range(len(maindatam)) if maindatam[c[i]].values[j]!=maindatam[c[i]].values[j]]
+      clf.fit(X_train,y_train)
+      y_pred=clf.predict(X_test)
+      try: 
+        y_pred=[float(str(y_pred[ix]).replace("'","").replace("b","").replace(",",".")) for ix in range(len(y_pred)) ]
+      except:
+        print("string type")
+      maindatam[c[i]].values[[j for j in range(len(maindatam)) if maindatam[c[i]].values[j]!=maindatam[c[i]].values[j]]]=y_pred
+      try:
+        valm[str(c[i])]=[float(str(ix).replace(',','.')) for ix in maindatam[str(c[i])].values]
+        valm[str(c[i])]=(valm[str(c[i])]-min(valm[str(c[i])]))/(max(valm[str(c[i])])-min(valm[str(c[i])]))
+      except :
+        if len([1 for i in maindatam[c[i]].values if i!=i])==0:
+          val2=np.unique([j for ix in maindatam[str(c[i])] for j in str(ix).replace("\"","").replace("(","").replace(")","").replace("'","").replace(";","").replace(",","").split()])
+          vll=pd.DataFrame()
+          xp=[]
+          for ixx in val2:
+            y=[ix for ix in range(len(maindatam)) for ix2 in str(maindatam[str(c[i])].values[ix]).split() if ixx==ix2]
+            xp.append(-1*len(y))
+          vv=np.sort(xp)
+          vallimit=vv[min(49,len(vv)-1)]
+          for ix in range(len(val2)):
+            if xp[ix]<=vallimit:
+              valm[maindatam.columns[i]+"_"+val2[ix]]=[0 for j in range(len(maindatam))]
+              valm[maindatam.columns[i]+"_"+val2[ix]].values[[j for j in range(len(maindatam)) for k in str(maindatam[str(c[i])].values[j]).split() if k==val2[ix]]]=1
+for i in range(len(valm.columns)):
+  if  len(valm[valm.columns[i]])==len(np.unique(valm[valm.columns[i]])):
+    a.append(valm.columns[i])
+if len(a)>0:
+  valm=valm.drop(a,axis=1)
+#veri train ve test olarak ayriliyor basta ve tahmin verisi de normalize ediliyor
+if len(valm)==0:
+  valm["numb"]=[i for i in range(len(maindatam))]
+valm["actual"]=maindatam['actual'].values
+namm=[]
+try: 
+  valm["actual"]=[float(str(ix).replace(',','.')) for ix in valm['actual'].values]
+except: 
+  namm=pd.Categorical(valm["actual"])
+  valm["actual"]=namm.codes
+trainer=valm.loc[[i for i in range(len(maindatam)) if maindatam["actual"].values[i]==maindatam["actual"].values[i]]]
+forecaster=valm.loc[[i for i in range(len(maindatam)) if maindatam["actual"].values[i]!=maindatam["actual"].values[i]]]
+forecasterM=maindatam.loc[[i for i in range(len(maindatam)) if maindatam["actual"].values[i]!=maindatam["actual"].values[i]]]
+
+results=pd.DataFrame()
+trainerm=trainer
+pfore=forecaster
+X = trainerm.drop(['actual'],axis=1)
+mm=len(X.columns)
+for i2 in range(len(X.columns)):
+    if np.var(X[X.columns[mm-1-i2]].values)==0:
+        pfore=pfore.drop(X.columns[mm-1-i2],axis=1)
+        X=X.drop(X.columns[mm-1-i2],axis=1)
+y=trainerm['actual'].values
+ytemp=y
+y=(y-min(y))/(max(y)-min(y))
+
+trainlength=int(round(len(X)*0.8))
+X_train=X.iloc[0:trainlength]
+X_test=X.iloc[trainlength:len(X)]
+y_train=np.array(y[0:trainlength])
+y_test=np.array(y[trainlength:len(X)])
+
+if len(pfore)==0:
+  forecaster=valm.iloc[trainlength:len(X)]
+  forecasterM=maindatam.iloc[trainlength:len(X)]
+  pfore=X_test
+if "actual" in pfore.columns:
+  pfore=pfore.drop('actual',axis=1)
+
+#simulated annealing ile tensorflow neural network icin en iyi parametreleri bulmaya calisiyor 
+activation=["relu", "sigmoid", "softmax", "softplus", "softsign", "tanh", "selu", "elu", "exponential"]
+optimizer=["Adadelta", "Adagrad", "Adam", "Adamax", "Ftrl", "Nadam", "SGD", "RMSprop"]
+inputsnum=len(X.columns)
+#kac iterasyon surmeli simulated annealing
+niter=15
+#butun parametre optimizasyonu kac kez tekrar edilmeli
+nrepeat=1
+#n-fold cross validation degeri
+foldnumber=5
+#aramayi cok dagitmadan yapmak icin ozel bir ekleme
+nm=0
+for j in range(nrepeat):
+  gEPOCHS = randint(1,5)*20
+  gnumLayers=randint(1,5)
+  gneurons=[randint(2,max(3,len(X.columns))) for i in range(gnumLayers)]
+  gLayers=[choice(activation) for i in range(gnumLayers)]
+  goptimizerName=choice(optimizer)
+  glearningRate=random.random()*0.0099+0.0001
+
+  model = build_model(inputsnum,gneurons,gLayers,goptimizerName,glearningRate)
+
+  # The patience parameter is the amount of epochs to check for improvement
+  early_stop = keras.callbacks.EarlyStopping(monitor='val_loss', patience=10)
+  x_temp=pd.DataFrame()
+  y_temp=y_train
+  y_temp=np.append(y_temp,y_test)
+  x_temp=pd.DataFrame()
+  for ix in X_train.columns:
+    x_temp[ix]=X_train[ix].values  
+  x_temp=x_temp.append(X_test)  
+
+  nn=len(x_temp)/foldnumber
+  xbeg=0
+  xend=xbeg+round(nn)
+  cleng=list(range(0,len(x_temp)))
+
+  lEPOCHS = randint(1,5)*20
+  lnumLayers=randint(1,5)
+  lneurons=[randint(2,len(X.columns)) for i in range(lnumLayers)]
+  lLayers=[choice(activation) for i in range(lnumLayers)]
+  loptimizerName=choice(optimizer)
+  llearningRate=random.random()*0.0099+0.0001
+
+  gbest=0  
+  lbest=0
+  cbest=0
+  for ii in range(0,foldnumber):
+    if foldnumber>1:
+      ctest=list(range(xbeg,xend))
+      #test'e gore train araligi olusturulur
+      ctrain=[x for x in cleng if x not in ctest]
+      #test ve egitim verileri guncellenir
+      X_train=x_temp.iloc[ctrain]
+      X_test=x_temp.iloc[ctest]
+      y_train=y_temp[ctrain]
+      y_test=y_temp[ctest]
+    model = build_model(inputsnum,gneurons,gLayers,goptimizerName,glearningRate)
+    early_history = model.fit(X_train, y_train, 
+                        epochs=gEPOCHS, validation_split = 0.2, verbose=0, 
+                        callbacks=[early_stop, tfdocs.modeling.EpochDots()])
+    gmodel=model
+    xx=np.transpose(model.predict(X_test))
+    aa=[i for i in range(len(xx[0])) if math.isnan(xx[0][i]) ]
+    if maindatam["actual"].dtype!=np.number:
+       gbest=gbest+((1- len(y_test[np.round(xx[0])==y_test])/len(y_test))/foldnumber)
+    else :
+      aa=[i for i in range(len(xx[0])) if math.isnan(xx[0][i]) ]
+      if len(aa)>0:
+        gbest=gbest+(sum(abs(xx[0]-y_test))*(1+abs(np.var(lmodel.predict(X_test))-np.var(y_test)))/foldnumber)
+      else:
+        gbest=gbest+(sum(abs(xx[0]-y_test)+1)*(1+abs(np.var(gmodel.predict(X_test))-np.var(y_test)))/foldnumber)
+
+    model = build_model(inputsnum,lneurons,lLayers,loptimizerName,llearningRate)
+
+    # The patience parameter is the amount of epochs to check for improvement
+    early_stop = keras.callbacks.EarlyStopping(monitor='val_loss', patience=10)
+
+    early_history = model.fit(X_train, y_train, 
+                        epochs=lEPOCHS, validation_split = 0.2, verbose=0, 
+                        callbacks=[early_stop, tfdocs.modeling.EpochDots()])
+    lmodel=model
+    xx=np.transpose(model.predict(X_test))
+    aa=[i for i in range(len(xx[0])) if math.isnan(xx[0][i]) ]
+    if maindatam["actual"].dtype!=np.number:
+       lbest=lbest+((1- len(y_test[np.round(xx[0])==y_test])/len(y_test))/foldnumber)
+    else :
+      aa=[i for i in range(len(xx[0])) if math.isnan(xx[0][i]) ]
+      if len(aa)>0:
+        lbest=lbest+(sum(abs(xx[0]-y_test))*(1+abs(np.var(lmodel.predict(X_test))-np.var(y_test)))/foldnumber)
+      else:
+        lbest=lbest+(sum(abs(xx[0]-y_test)+1)*(1+abs(np.var(gmodel.predict(X_test))-np.var(y_test)))/foldnumber)
+    #test araligi guncellenir
+    xbeg=xend
+    xend=min((xbeg+round(nn)),len(x_temp))
+    
+  if lbest<gbest:
+    temp=gmodel
+    gmodel=lmodel
+    lmodel=temp
+    temp=lEPOCHS
+    lEPOCHS = gEPOCHS
+    gEPOCHS=temp
+    temp=lnumLayers
+    lnumLayers=gnumLayers
+    gnumLayers=temp
+    temp=lneurons
+    lneurons=gneurons
+    gneurons=temp
+    temp=lLayers
+    lLayers=gLayers
+    gLayers=temp
+    temp=loptimizerName
+    loptimizerName=goptimizerName
+    goptimizerName=temp
+    temp=llearningRate
+    llearningRate=glearningRate
+    glearningRate=temp
+    temp=lbest
+    lbest=gbest
+    gbest=temp
+
+  temperature=gbest*0.8
+
+  for k in range(niter):
+    varP=[random.randint(0,1) for i in range(4)]
+    while (np.sum(varP)==0):
+      varP=[random.randint(0,1) for i in range(4)]    
+    cEPOCHS =lEPOCHS
+    if varP[0]==1:
+      cEPOCHS = randint(1,5)*20
+    cnumLayers=lnumLayers  
+    cneurons=lneurons
+    cLayers=lLayers
+    if varP[1]==1:
+      cnumLayers=randint(1,5)
+      cneurons=[randint(2,max(3,len(X.columns))) for i in range(cnumLayers)]
+      cLayers=[choice(activation) for i in range(cnumLayers)]
+    coptimizerName=loptimizerName
+    if varP[2]==1:
+      coptimizerName=choice(optimizer)
+    clearningRate=llearningRate
+    if varP[3]==1:
+      clearningRate=random.random()*0.0099+0.0001
+    model = build_model(inputsnum,cneurons,cLayers,coptimizerName,clearningRate)
+    # The patience parameter is the amount of epochs to check for improvement
+    early_stop = keras.callbacks.EarlyStopping(monitor='val_loss', patience=10)
+################################################
+    xbeg=0
+    xend=xbeg+round(nn)
+    cbest=0
+    for ii in range(0,foldnumber):
+      if foldnumber>1:
+        ctest=list(range(xbeg,xend))
+        #test'e gore train araligi olusturulur
+        ctrain=[x for x in cleng if x not in ctest]
+        #test ve egitim verileri guncellenir
+        X_train=x_temp.iloc[ctrain]
+        X_test=x_temp.iloc[ctest]
+        y_train=y_temp[ctrain]
+        y_test=y_temp[ctest]
+      early_history = model.fit(X_train, y_train, 
+                            epochs=cEPOCHS, validation_split = 0.2, verbose=0, 
+                            callbacks=[early_stop, tfdocs.modeling.EpochDots()])
+      cmodel=model
+      xx=np.transpose(model.predict(X_test))
+      aa=[i for i in range(len(xx[0])) if math.isnan(xx[0][i]) ]
+      if maindatam["actual"].dtype!=np.number:
+        cbest=cbest+((1- len(y_test[np.round(xx[0])==y_test])/len(y_test))/foldnumber)
+      else :
+        aa=[i for i in range(len(xx[0])) if math.isnan(xx[0][i]) ]
+        if len(aa)>0:
+          cbest=cbest+(sum(abs(xx[0]-y_test))*(1+abs(np.var(lmodel.predict(X_test))-np.var(y_test)))/foldnumber)
+        else:
+          cbest=cbest+(sum(abs(xx[0]-y_test)+1)*(1+abs(np.var(gmodel.predict(X_test))-np.var(y_test)))/foldnumber)
+      #test araligi guncellenir
+      xbeg=xend
+      xend=min((xbeg+round(nn)),len(x_temp))
+
+################################################
+    if cbest<gbest:
+      gEPOCHS =cEPOCHS
+      gmodel=cmodel
+      gnumLayers=cnumLayers
+      gneurons=cneurons
+      gLayers=cLayers
+      goptimizerName=coptimizerName
+      glearningRate=clearningRate
+      gbest=cbest
+      nm=0
+      print("success!!")
+    if cbest<lbest:
+      lmodel=cmodel
+      lEPOCHS =cEPOCHS 
+      lnumLayers=cnumLayers
+      lneurons=cneurons
+      lLayers=cLayers
+      loptimizerName=coptimizerName
+      llearningRate=clearningRate
+      lbest=cbest
+    else :
+      if math.exp((lbest-cbest)/temperature)>random.random():
+        lmodel=cmodel
+        lEPOCHS =cEPOCHS 
+        lnumLayers=cnumLayers
+        lneurons=cneurons
+        lLayers=cLayers
+        loptimizerName=coptimizerName
+        llearningRate=clearningRate
+        lbest=cbest
+    if k%5==0:
+      temperature=temperature*0.9
+    if nm>5:
+      lmodel=gmodel
+      lEPOCHS =gEPOCHS 
+      lnumLayers=gnumLayers
+      lneurons=gneurons
+      lLayers=gLayers
+      loptimizerName=goptimizerName
+      llearningRate=glearningRate
+      lbest=gbest
+      nm=0
+    nm=nm+1
+    print(str(k)+"-iteration=> global :" + str(gbest)+", local: "+str(lbest)+", current:"+str(cbest)+".")
+  
+  if len(predictions)==0:
+      predictions=gmodel.predict(pfore)/nrepeat
+  else:
+      predictions=predictions+ (gmodel.predict(pfore)/nrepeat)
+
+if max(predictions)>1 or min(predictions)<0:
+  predictions=(predictions-min(predictions))/(max(predictions)-min(predictions))
+predictions=predictions*(max(ytemp)-min(ytemp))+min(ytemp)
+#cikti 0 ve 1 arasinda ciktigi icin uygun hale donusturuluyor:
+if len(namm)>0 or len(np.unique([maindatam["actual"].values[i] for i in range(len(maindatam)) if maindatam["actual"].values[i]==maindatam["actual"].values[i]]))<50:
+  if str(maindatam["actual"].dtype)=='object':
+    predictions2=['a' for i in range(0,len(predictions))]
+  else:  
+    predictions2=predictions
+  vg=np.unique(valm["actual"])
+  vg2=np.unique(predictions)
+  for i in vg2:
+    mintemp=abs(vg[0]-i)
+    minval=vg[0]
+    for ix in vg:
+      if abs(ix-i)<mintemp:
+        mintemp=abs(ix-i)
+        minval=ix
+    if len(namm)>0:
+      for isx in range(0,len(predictions)): 
+        if predictions[isx]==i :
+          predictions2[isx ]=namm[minval]
+    else :
+      for isx in range(0,len(predictions)): 
+        if predictions[isx]==i :
+          predictions2[isx ]=minval
+  predictions=predictions2
+
+forecasterM=forecasterM.assign(actual=predictions)
+#tahminleri incelemek icin csvye yaziliyor
+forecasterM.to_csv('Result.csv', index = False)
+#en iyi parametreler ve en iyi sonuc asagidaki kod araciligiyla ekrana yazilir:
+print("en iyi parametreler:")
+print ("Epoch buyuklugu:"+str(gEPOCHS))
+print ("Katman sayisi:"+str(gnumLayers))
+print ("Katmanlardaki neron sayisi:"+str(gneurons))
+print ("Katmanlardaki optimizer adi:"+str(goptimizerName))
+print ("ogrenme orani:"+str(glearningRate))
+print("5- fold cross validation dogru tahmin oran (%) ortalamasi:"+str((1-gbest)*100))
+
+
+# Bonus: Pazar Sepeti Analiz teknigi ile incelemek icin asagidaki kod hazirlandi (bloklu halde) 
+# ama  cok yavas surdugu icin alternatif olarak karar agaci ile en etkili ilk 10 sonuc kurali listeleyen kodda yazildi
+#bazi kaynaklar
+#:https://stackoverflow.com/questions/56334210/how-to-extract-sklearn-decision-tree-rules-to-pandas-boolean-conditions
+#https://stackoverflow.com/questions/37787698/how-to-sort-pandas-dataframe-from-one-column
+#https://www.datacamp.com/community/tutorials/decision-tree-classification-python
+#https://stackabuse.com/association-rule-mining-via-apriori-algorithm-in-python/
+
+
+#valmR=pd.DataFrame()
+#for i in range(0,len(valm.columns)):
+#  if len(np.unique(valm[valm.columns[i]]))>2:
+#    val25=np.percentile(valm[valm.columns[i]],25)
+#    val50=np.percentile(valm[valm.columns[i]],50)
+#    val75=np.percentile(valm[valm.columns[i]],75)
+#    maxval=max(valm[valm.columns[i]])
+#    minval=min(valm[valm.columns[i]])
+#    valmR[valm.columns[i]+"_25"]=valm[valm.columns[i]].values  
+#    valmR[valm.columns[i]+"_25"]=0
+#    valmR[valm.columns[i]+"_25"].loc[[j for j in range(0,len(valm)) if valm[valm.columns[i]].values[j]>=minval and valm[valm.columns[i]].values[j]<=val25]]=1
+#    valmR[valm.columns[i]+"_50"]=0
+#    valmR[valm.columns[i]+"_50"].loc[[j for j in range(0,len(valm)) if valm[valm.columns[i]].values[j]>val25 and valm[valm.columns[i]].values[j]<=val50]]=1
+#    valmR[valm.columns[i]+"_75"]=0
+#    valmR[valm.columns[i]+"_75"].loc[[j for j in range(0,len(valm)) if valm[valm.columns[i]].values[j]>val50 and valm[valm.columns[i]].values[j]<=val75]]=1
+#    valmR[valm.columns[i]+"_100"]=0
+#    valmR[valm.columns[i]+"_100"].loc[[j for j in range(0,len(valm)) if valm[valm.columns[i]].values[j]>val75 and valm[valm.columns[i]].values[j]<=maxval]]=1
+#  else :
+#    valmR[valm.columns[i]]=valm[valm.columns[i]].values
+#!pip install apyori
+#from apyori import apriori
+#n=0.2
+#maindatam["ractual"]=y
+#xy=maindatam.groupby(by=["actual","ractual"], as_index=False).first()
+#y_id=xy["ractual"].values[xy["actual"]=="yes"]
+#y_id=y_id[0]
+#valmR2=valmR.loc[valmR["actual"]==y_id]
+#records = []
+#for i in range(0, len(valmR2)):
+#    records.append([valmR2.columns[j] for j in range(0, len(valmR2.columns)) if valmR2.values[i,j]>0])
+
+#association_results =[]
+#while len(association_results)==0:
+#  association_rules = apriori(records, min_support=0.01, min_confidence=0.8, min_lift=3, min_length=2)
+#  association_results = list(association_rules)
+#  n=n/2
+# print(association_results)
+
+#karar agacina gore en anlamli musteri tipini bulan kod asagidadir:
+
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.tree import export_text
+clf = DecisionTreeClassifier()
+X_train_temp=pd.DataFrame()
+maindatam["ractual"]=y
+xy=maindatam.groupby(by=["actual","ractual"], as_index=False).first()
+y_id=xy["ractual"].values[xy["actual"]=="yes"]
+y_id=y_id[0]
+for j in range(0,len(X_train.columns)): 
+  X_train_temp[X_train.columns[j]]=X_train[X_train.columns[j]].values
+
+for i in range(0,len(maindatam.columns)):
+  for j in range(0,len(X_train_temp.columns)): 
+    if maindatam.columns[i]==X_train_temp.columns[j]:
+      X_train_temp[X_train_temp.columns[j]]=X_train_temp[X_train_temp.columns[j]].values*(max(maindatam[maindatam.columns[i]].values)-min(maindatam[maindatam.columns[i]].values))+min(maindatam[maindatam.columns[i]].values)
+
+clf = clf.fit(X_train_temp,y_train)
+tree_rules = export_text(clf, feature_names=list(X_train_temp.columns))
+
+def find_path(node_numb, path, x):
+        path.append(node_numb)
+        if node_numb == x:
+            return True
+        left = False
+        right = False
+        if (children_left[node_numb] !=-1):
+            left = find_path(children_left[node_numb], path, x)
+        if (children_right[node_numb] !=-1):
+            right = find_path(children_right[node_numb], path, x)
+        if left or right :
+            return True
+        path.remove(node_numb)
+        return False
+
+
+def get_rule(path, column_names):
+    mask = ''
+    for index, node in enumerate(path):
+        #We check if we are not in the leaf
+        if index!=len(path)-1:
+            # Do we go under or over the threshold ?
+            if (children_left[node] == path[index+1]):
+                mask += "(df['{}']<= {}) \t ".format(column_names[feature[node]], threshold[node])
+            else:
+                mask += "(df['{}']> {}) \t ".format(column_names[feature[node]], threshold[node])
+    # We insert the & at the right places
+    mask = mask.replace("\t", "&", mask.count("\t") - 1)
+    mask = mask.replace("\t", "")
+    return mask
+
+n_nodes = clf.tree_.node_count
+children_left = clf.tree_.children_left
+children_right = clf.tree_.children_right
+feature = clf.tree_.feature
+threshold = clf.tree_.threshold
+
+leave_id = clf.apply(X_train_temp)
+paths ={}
+for leaf in np.unique(leave_id):
+    path_leaf = []
+    find_path(0, path_leaf, leaf)
+    paths[leaf] = np.unique(np.sort(path_leaf))
+
+rules = {}
+val=[]
+for key in paths:
+    rules[key] = get_rule(paths[key], X_train_temp.columns)
+    val.append(key)
+X_train_temp["actual"]=y_train
+df=X_train_temp
+imp=pd.DataFrame()
+for i in val:
+  r=pd.DataFrame()
+  mx=df.loc[eval(rules[i])]
+  r["Class Density"]=[len(mx.values[mx["actual"]==y_id])/len(df[eval(rules[i])])]
+  r["Observation"]=[len(df[eval(rules[i])])]
+  r["Rules"]=rules[i]
+  if len(imp)==0:
+    imp=r
+  else :
+    imp=imp.append(r)
+if y_id==0:
+  xa=imp.loc[imp["Class Density"]<=0.5]
+else:
+  xa=imp.loc[imp["Class Density"]>0.5]
+xa=xa.sort_values('Observation',ascending=False)
+print("######################################################################")
+print("En cok gozlemlenen kurallar (y:Yes durumu icin)")
+for i in range(0,10):
+  a=xa["Rules"].values[i].replace("(df['","").replace("']","").replace(")","").split(' & ')
+  bb=pd.DataFrame()
+  bb["criteria"]=[]
+  bb["upperbound"]=[]
+  bb["lowerbound"]=[]
+  for j in range(0,len(a)):
+    if (len(bb)==0):
+      b=pd.DataFrame()
+      if "<" in a[j] :
+        x=a[j].replace('=','').split('<')
+        b["criteria"]=[x[0]]
+        if "_" in a[j]:
+          b["upperbound"]=0
+        else :
+          b["upperbound"]=float(x[1])
+        b["lowerbound"]=min(df[x[0]].values)
+      else :
+        x=a[j].replace('=','').split('>')
+        b["criteria"]=[x[0]]
+        b["upperbound"]=max(df[x[0]].values)
+        if "_" in a[j]:
+          b["lowerbound"]=1
+        else :
+          b["lowerbound"]=float(x[1])
+      bb=b
+    else :
+      if "<" in a[j] :
+        x=a[j].replace('=','').split('<')
+      else :
+        x=a[j].replace('=','').split('>')
+      if x[0] in bb["criteria"].values:
+        if "<" in a[j] :
+          if bb["upperbound"].loc[bb["criteria"]==x[0]][0]>float(x[1]):
+            bb["upperbound"].loc[bb["criteria"]==x[0]]=float(x[1])
+        else :
+          if bb["lowerbound"].loc[bb["criteria"]==x[0]][0]<float(x[1]):
+            bb["lowerbound"].loc[bb["criteria"]==x[0]]=float(x[1])
+      else : 
+        b=pd.DataFrame()
+        if "<" in a[j] :
+          b["criteria"]=[x[0]]
+          if "_" in a[j]:
+            b["upperbound"]=0
+          else:
+            b["upperbound"]=float(x[1])
+          b["lowerbound"]=min(df[x[0]].values)        
+        else :
+          b["criteria"]=[x[0]]
+          b["upperbound"]=max(df[x[0]].values)
+          if "_" in a[j]:
+            b["lowerbound"]=1
+          else :  
+            b["lowerbound"]=float(x[1])
+        bb=bb.append(b)
+  s=""
+  for j in range(0,len(bb)):
+    s=s +str(bb["lowerbound"].values[j]) +"<=" + bb["criteria"].values[j] + "<=" +str(bb["upperbound"].values[j])
+    if j!=(len(bb)-1):
+      s=s + " & "
+  s=s+ ", gozlem sayisi: "+ str(xa["Observation"].values[i]) +", sinif yogunluk: "+str(xa["Class Density"].values[i]*100)+"%"
+  print(s)
+
+#ilk 10 kural icerisinde ozellikle 
+#ciktisi: en sonda ciktisinda kurallar, kac kere gozlemlendigi ve o sinifa % ne kadarinda gozlemlenmistir seklinde yazilmaktadir!
+
+#agirlikli olarak age, duration, marital (evli olmasi veya olmamasi degismekte),loan (yes/no verisine donusturulmustur agirlikli olarak no),
+#job (unemployed, admin, management,housemaid,technician,services, entrepreneur olmayanlar),education (tertiary olan ve olmayan olarak) 
+#ve balance sutunlari gozlemlenmistir.
